@@ -5,6 +5,9 @@ from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
+# Target keywords requested by user (evaluated case-insensitively)
+KEYWORDS = ["editor", "thumbnail", "edit", "motion", "graphic designer", "designer"]
+
 class GeminiFilter:
     def __init__(self, api_key: str):
         self.api_key = api_key.strip()
@@ -21,12 +24,25 @@ class GeminiFilter:
             logger.warning(f"Failed to load google.genai, using direct REST requests: {e}")
             self.use_new_sdk = False
 
+    def has_relevant_keywords(self, post_content: str) -> bool:
+        """
+        Case-insensitive check for target keywords.
+        """
+        if not post_content:
+            return False
+        content_lower = post_content.lower()
+        return any(kw in content_lower for kw in KEYWORDS)
+
     def evaluate_post(self, post_content: str, author: str, channel_name: str) -> Dict[str, Any]:
         """
-        Analyzes post content using Gemini to check if it's someone HIRING an Editor or Thumbnail Designer.
+        Analyzes post content exclusively using Gemini 3.5 Flash-Lite to check if poster is HIRING.
         """
         if not post_content or len(post_content.strip()) < 5:
             return {"is_match": False, "role_type": "None", "summary": "", "reasoning": "Post content too short."}
+
+        # Check keywords pre-filter
+        if not self.has_relevant_keywords(post_content):
+            return {"is_match": False, "role_type": "None", "summary": "", "reasoning": "No target editing/thumbnail keywords found."}
 
         prompt = f"""You are an expert AI job classifier. Analyze the following Discord post.
 
@@ -38,22 +54,22 @@ Post Content:
 \"\"\"
 
 Your Task:
-1. Determine if the post author is HIRING, LOOKING FOR, or NEEDING a Video Editor or Thumbnail Designer (or Graphic Designer for YouTube/video thumbnails).
+1. Determine if the post author is HIRING, LOOKING FOR, or NEEDING a Video Editor, Thumbnail Designer, Motion Graphic Designer, or Graphic Designer.
 2. CRITICAL DISTINCTION:
-   - MATCH (is_match = true): The poster is HIRING / LOOKING TO BUY services (e.g. "Looking for an editor", "Hiring thumbnail designer", "Need someone to edit my videos", "[HIRING] Editor needed", "DM me your portfolio if you make thumbnails").
+   - MATCH (is_match = true): The poster is HIRING / LOOKING TO BUY services (e.g. "Looking for an editor", "Hiring thumbnail designer", "Need someone to edit my videos", "[HIRING] Motion designer needed", "DM me your portfolio if you make thumbnails").
    - NO MATCH (is_match = false): The poster is SELLING / OFFERING their own services (e.g. "I am a video editor available for work", "For Hire: Thumbnail designer", "DM me if you need an editor").
    - NO MATCH (is_match = false): General conversation, feedback requests, self-promotion, or unrelated topics.
 
 Respond EXCLUSIVELY in valid JSON format with the following fields:
 {{
   "is_match": true or false,
-  "role_type": "Video Editor" or "Thumbnail Designer" or "Both" or "None",
+  "role_type": "Video Editor" or "Thumbnail Designer" or "Motion / Graphic Designer" or "None",
   "summary": "Concise 1-2 sentence summary of the job offer (budget, style, requirements if mentioned)",
   "reasoning": "Brief explanation why this post is or is not a hiring request"
 }}
 """
 
-        model_name = "gemini-3.6-flash"
+        model_name = "gemini-3.5-flash-lite"
         max_retries = 3
         last_err = None
 
