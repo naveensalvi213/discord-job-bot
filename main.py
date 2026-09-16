@@ -5,7 +5,13 @@ from discord_fetcher import DiscordFetcher
 from gemini_filter import GeminiFilter
 from telegram_sender import TelegramSender
 
-# Configure clean logging format
+# Configure UTF-8 encoding for Windows stdout logging
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -52,7 +58,7 @@ def main():
 
                 logger.info(
                     f"Result for post {post['id']}: match={evaluation['is_match']}, "
-                    f"role={evaluation['role_type']}, reasoning={evaluation['reasoning']}"
+                    f"role={evaluation['role_type']}, summary={evaluation['summary']}"
                 )
 
                 if evaluation["is_match"]:
