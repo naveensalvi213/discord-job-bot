@@ -1,4 +1,5 @@
 import json
+import time
 import logging
 from typing import Dict, Any
 
@@ -52,10 +53,11 @@ Respond EXCLUSIVELY in valid JSON format with the following fields:
 }}
 """
 
-        models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
+        model_name = "gemini-3.6-flash"
+        max_retries = 3
         last_err = None
 
-        for model_name in models_to_try:
+        for attempt in range(1, max_retries + 1):
             try:
                 if self.use_new_sdk:
                     return self._evaluate_with_sdk(model_name, prompt)
@@ -63,9 +65,14 @@ Respond EXCLUSIVELY in valid JSON format with the following fields:
                     return self._evaluate_with_rest(model_name, prompt)
             except Exception as e:
                 last_err = e
-                logger.warning(f"Model {model_name} failed: {e}. Trying next model...")
+                err_str = str(e)
+                if "503" in err_str or "429" in err_str or "UNAVAILABLE" in err_str:
+                    logger.warning(f"Gemini API attempt {attempt}/{max_retries} busy ({err_str}). Retrying in {attempt * 2}s...")
+                    time.sleep(attempt * 2)
+                else:
+                    logger.error(f"Gemini API error on attempt {attempt}: {err_str}")
+                    break
 
-        logger.error(f"All Gemini model attempts failed: {last_err}")
         return {"is_match": False, "role_type": "None", "summary": "", "reasoning": f"API Error: {str(last_err)}"}
 
     def _evaluate_with_sdk(self, model_name: str, prompt: str) -> Dict[str, Any]:
