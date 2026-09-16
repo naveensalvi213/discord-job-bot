@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -17,19 +17,12 @@ class GeminiFilter:
             self.use_new_sdk = True
             logger.info("Initialized Google GenAI client.")
         except Exception as e:
-            logger.warning(f"Failed to load google.genai, falling back to direct REST requests: {e}")
+            logger.warning(f"Failed to load google.genai, using direct REST requests: {e}")
             self.use_new_sdk = False
 
     def evaluate_post(self, post_content: str, author: str, channel_name: str) -> Dict[str, Any]:
         """
         Analyzes post content using Gemini to check if it's someone HIRING an Editor or Thumbnail Designer.
-        Returns a dict:
-        {
-            "is_match": bool,
-            "role_type": str ("Video Editor", "Thumbnail Designer", "Both", or "None"),
-            "summary": str,
-            "reasoning": str
-        }
         """
         if not post_content or len(post_content.strip()) < 5:
             return {"is_match": False, "role_type": "None", "summary": "", "reasoning": "Post content too short."}
@@ -59,50 +52,46 @@ Respond EXCLUSIVELY in valid JSON format with the following fields:
 }}
 """
 
-        try:
-            if self.use_new_sdk:
-                return self._evaluate_with_sdk(prompt)
-            else:
-                return self._evaluate_with_rest(prompt)
-        except Exception as e:
-            logger.error(f"Error calling Gemini API: {e}")
-            return {"is_match": False, "role_type": "None", "summary": "", "reasoning": f"API Error: {str(e)}"}
-
-    def _evaluate_with_sdk(self, prompt: str) -> Dict[str, Any]:
-        from google.genai import types
-        
-        # Try gemini-2.5-flash first, fallback to gemini-1.5-flash
-        models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash"]
+        models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash-latest"]
         last_err = None
 
         for model_name in models_to_try:
             try:
-                response = self.client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        temperature=0.1
-                    )
-                )
-                if response.text:
-                    return self._clean_and_parse_json(response.text)
+                if self.use_new_sdk:
+                    return self._evaluate_with_sdk(model_name, prompt)
+                else:
+                    return self._evaluate_with_rest(model_name, prompt)
             except Exception as e:
                 last_err = e
-                logger.warning(f"Model {model_name} failed: {e}. Trying fallback.")
+                logger.warning(f"Model {model_name} failed: {e}. Trying next model...")
 
-        raise last_err or Exception("All Gemini model attempts failed.")
+        logger.error(f"All Gemini model attempts failed: {last_err}")
+        return {"is_match": False, "role_type": "None", "summary": "", "reasoning": f"API Error: {str(last_err)}"}
 
-    def _evaluate_with_rest(self, prompt: str) -> Dict[str, Any]:
+    def _evaluate_with_sdk(self, model_name: str, prompt: str) -> Dict[str, Any]:
+        from google.genai import types
+        response = self.client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.1
+            )
+        )
+        if response.text:
+            return self._clean_and_parse_json(response.text)
+        raise Exception("Empty response from Gemini SDK")
+
+    def _evaluate_with_rest(self, model_name: str, prompt: str) -> Dict[str, Any]:
         import requests
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={self.api_key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {"responseMimeType": "application/json", "temperature": 0.1}
         }
-        resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
+        resp = requests.post(url, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
         if resp.status_code != 200:
-            raise Exception(f"REST API HTTP {resp.status_code}: {resp.text}")
+            raise Exception(f"HTTP {resp.status_code}: {resp.text}")
         
         data = resp.json()
         try:
