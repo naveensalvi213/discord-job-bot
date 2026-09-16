@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import requests
 import threading
 import logging
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -33,8 +34,23 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"<h1>Discord to Telegram Job Bot is Running 24/7 on Render!</h1>")
 
     def log_message(self, format, *args):
-        # Suppress verbose HTTP server access logs
         return
+
+def self_ping_loop():
+    """
+    Heartbeat ping thread to ensure Render web service never goes to sleep.
+    """
+    url = os.getenv("RENDER_EXTERNAL_URL", "https://discord-to-telegram-job-bot.onrender.com")
+    logger.info(f"Starting self-ping heartbeat service targeting {url}...")
+    # Initial sleep before first ping
+    time.sleep(300)
+    while True:
+        try:
+            resp = requests.get(url, timeout=10)
+            logger.info(f"Self-ping heartbeat: HTTP {resp.status_code}")
+        except Exception as e:
+            logger.warning(f"Self-ping heartbeat failed: {e}")
+        time.sleep(600)  # Ping every 10 minutes
 
 def bot_loop():
     logger.info("Initializing 24/7 Continuous Discord Job Monitor on Render...")
@@ -64,7 +80,7 @@ def bot_loop():
                         continue
 
                     total_new_posts += len(posts)
-                    logger.info(f"Fetched {len(posts)} new post(s) from channel {channel_id}. Analyzing with Gemini AI...")
+                    logger.info(f"Fetched {len(posts)} new post(s) from channel {channel_id}. Evaluating with Gemini AI...")
 
                     for post in posts:
                         author_safe = post['author'].encode('ascii', 'ignore').decode('ascii')
@@ -105,8 +121,12 @@ def bot_loop():
 
 def main():
     # Start bot loop in background daemon thread
-    t = threading.Thread(target=bot_loop, daemon=True)
-    t.start()
+    t_bot = threading.Thread(target=bot_loop, daemon=True)
+    t_bot.start()
+
+    # Start self-ping heartbeat in background daemon thread
+    t_ping = threading.Thread(target=self_ping_loop, daemon=True)
+    t_ping.start()
 
     # Start HTTP server for Render health checks
     port = int(os.getenv("PORT", 8080))
