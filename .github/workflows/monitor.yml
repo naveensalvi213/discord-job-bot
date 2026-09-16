@@ -1,10 +1,9 @@
-name: Discord Job Monitor
+name: Discord Job Monitor 24/7
 
 on:
   schedule:
-    # Runs every 5 minutes (cron: minute hour day month day-of-week)
-    - cron: '*/5 * * * *'
-  workflow_dispatch: # Allows manual triggering from GitHub UI
+    - cron: '*/2 * * * *' # Triggers every 2 minutes
+  workflow_dispatch:
 
 jobs:
   monitor:
@@ -27,7 +26,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run Discord Job Monitor
+      - name: Run 24/7 Continuous Monitor Loop
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           DISCORD_CHANNEL_IDS: ${{ secrets.DISCORD_CHANNEL_IDS }}
@@ -35,11 +34,12 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python main.py
+          # Runs a continuous loop for 4 minutes (240s), checking every 20 seconds
+          python main.py --duration 240 --interval 20
 
       - name: Commit and push updated state.json
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add state.json || true
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update message tracker state [skip ci]" && git push)
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto-update state.json [skip ci]" && git push)

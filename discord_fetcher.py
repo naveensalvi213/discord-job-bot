@@ -39,6 +39,11 @@ class DiscordFetcher:
         except Exception as e:
             logger.error(f"Failed to save state file: {e}")
 
+    def update_channel_state(self, channel_id: str, message_id: str):
+        current_seen = self.state.get(channel_id)
+        if not current_seen or int(message_id) > int(current_seen):
+            self.state[channel_id] = message_id
+
     def _make_request(self, url: str, params: Dict[str, Any] = None) -> Any:
         resp = requests.get(url, headers=self.headers, params=params)
         
@@ -75,11 +80,6 @@ class DiscordFetcher:
             posts.extend(self._fetch_text_channel_messages(channel_id, guild_id, channel_name, last_seen_id))
 
         posts.sort(key=lambda p: int(p["id"]))
-
-        if posts:
-            newest_id = posts[-1]["id"]
-            self.state[channel_id] = newest_id
-
         return posts
 
     def _fetch_text_channel_messages(self, channel_id: str, guild_id: str, channel_name: str, last_seen_id: str) -> List[Dict[str, Any]]:
@@ -119,9 +119,8 @@ class DiscordFetcher:
         if archived_res and "threads" in archived_res:
             threads.extend([t for t in archived_res.get("threads", []) if t.get("parent_id") == forum_id])
 
-        # Sort threads newest first and limit to 10 most recent
         threads.sort(key=lambda t: int(t["id"]), reverse=True)
-        threads = threads[:10]
+        threads = threads[:15]
 
         for thread in threads:
             thread_id = thread["id"]
