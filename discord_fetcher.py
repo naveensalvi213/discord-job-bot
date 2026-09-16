@@ -42,7 +42,6 @@ class DiscordFetcher:
     def _make_request(self, url: str, params: Dict[str, Any] = None) -> Any:
         resp = requests.get(url, headers=self.headers, params=params)
         
-        # If Bot authorization failed (401/403), try raw User token format without "Bot " prefix
         if resp.status_code in (401, 403) and self.headers["Authorization"].startswith("Bot "):
             raw_token = self.token.replace("Bot ", "").strip()
             alt_headers = {"Authorization": raw_token, "User-Agent": "Mozilla/5.0"}
@@ -70,7 +69,6 @@ class DiscordFetcher:
 
         posts = []
 
-        # Type 15 is GUILD_FORUM
         if channel_type == 15:
             posts.extend(self._fetch_forum_posts(channel_id, guild_id, channel_name, last_seen_id))
         else:
@@ -119,7 +117,11 @@ class DiscordFetcher:
         archived_url = f"{DISCORD_API_BASE}/channels/{forum_id}/threads/archived/public"
         archived_res = self._make_request(archived_url)
         if archived_res and "threads" in archived_res:
-            threads.extend(archived_res["threads"])
+            threads.extend([t for t in archived_res.get("threads", []) if t.get("parent_id") == forum_id])
+
+        # Sort threads newest first and limit to 10 most recent
+        threads.sort(key=lambda t: int(t["id"]), reverse=True)
+        threads = threads[:10]
 
         for thread in threads:
             thread_id = thread["id"]
