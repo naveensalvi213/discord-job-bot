@@ -24,15 +24,15 @@ def sync():
         cmd = ["gh", "secret", "set", secret, "--repo", "naveensalvi213/discord-job-bot", "--body", val]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
-            print(f"✅ Set GitHub secret: {secret}")
+            print(f"[OK] Set GitHub secret: {secret}")
         else:
-            print(f"❌ Failed to set {secret}: {result.stderr}")
+            print(f"[ERROR] Failed to set {secret}: {result.stderr}")
     
     if missing:
-        print(f"\n⚠️ The following secrets are missing from your .env file: {', '.join(missing)}")
+        print(f"\n[!] The following secrets are missing from your .env file: {', '.join(missing)}")
         print("Please edit the .env file in this folder and run 'python sync_secrets.py' again.")
     else:
-        print("\n🎉 All secrets successfully uploaded to GitHub!")
+        print("\n[SUCCESS] All secrets successfully uploaded to GitHub!")
 
 if __name__ == "__main__":
     sync()
