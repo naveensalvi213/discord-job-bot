@@ -66,21 +66,35 @@ class DiscordFetcher:
         return res if isinstance(res, dict) else {}
 
     def fetch_new_posts_from_channel(self, channel_id: str) -> List[Dict[str, Any]]:
+        """
+        Dual-mode fetcher: checks both standard text messages and forum threads for the channel.
+        Removes dependency on restricted /channels/{id} endpoint.
+        """
         last_seen_id = self.state.get(channel_id)
         channel_info = self.fetch_channel_info(channel_id)
         channel_name = channel_info.get("name", channel_id)
         guild_id = channel_info.get("guild_id", "")
-        channel_type = channel_info.get("type", 0)
 
         posts = []
 
-        if channel_type == 15:
-            posts.extend(self._fetch_forum_posts(channel_id, guild_id, channel_name, last_seen_id))
-        else:
-            posts.extend(self._fetch_text_channel_messages(channel_id, guild_id, channel_name, last_seen_id))
+        # 1. Try standard text channel messages
+        text_msgs = self._fetch_text_channel_messages(channel_id, guild_id, channel_name, last_seen_id)
+        if text_msgs:
+            posts.extend(text_msgs)
 
-        posts.sort(key=lambda p: int(p["id"]))
-        return posts
+        # 2. Try forum threads (if channel is a forum or has threads)
+        forum_posts = self._fetch_forum_posts(channel_id, guild_id, channel_name, last_seen_id)
+        if forum_posts:
+            posts.extend(forum_posts)
+
+        # Remove duplicate post IDs if any
+        unique_posts = {}
+        for p in posts:
+            unique_posts[p["id"]] = p
+
+        sorted_posts = list(unique_posts.values())
+        sorted_posts.sort(key=lambda p: int(p["id"]))
+        return sorted_posts
 
     def _fetch_text_channel_messages(self, channel_id: str, guild_id: str, channel_name: str, last_seen_id: str) -> List[Dict[str, Any]]:
         url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
@@ -119,15 +133,20 @@ class DiscordFetcher:
         if archived_res and "threads" in archived_res:
             threads.extend([t for t in archived_res.get("threads", []) if t.get("parent_id") == forum_id])
 
-        threads.sort(key=lambda t: int(t["id"]), reverse=True)
-        threads = threads[:15]
+        # Filter out threads older than or equal to last_seen_id
+        valid_threads = []
+        for t in threads:
+            t_id = t["id"]
+            if last_seen_id and int(t_id) <= int(last_seen_id):
+                continue
+            valid_threads.append(t)
 
-        for thread in threads:
+        valid_threads.sort(key=lambda t: int(t["id"]), reverse=True)
+        valid_threads = valid_threads[:15]
+
+        for thread in valid_threads:
             thread_id = thread["id"]
             thread_name = thread.get("name", "Forum Post")
-            
-            if last_seen_id and int(thread_id) <= int(last_seen_id):
-                continue
 
             msg_url = f"{DISCORD_API_BASE}/channels/{thread_id}/messages"
             msgs = self._make_request(msg_url, params={"limit": 1})
