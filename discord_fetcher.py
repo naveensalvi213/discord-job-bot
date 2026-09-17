@@ -9,17 +9,19 @@ logger = logging.getLogger(__name__)
 DISCORD_API_BASE = "https://discord.com/api/v10"
 
 class DiscordFetcher:
-    def __init__(self, token: str, state_file: str = "state.json"):
+    def __init__(self, token: str, state_file: str = "state.json", guild_map_file: str = "guild_map.json"):
         self.token = token.strip()
         self.state_file = state_file
+        self.guild_map_file = guild_map_file
         self.state = self._load_state()
         self.headers = self._build_headers()
+        self.guild_map = self._load_guild_map()
 
     def _build_headers(self) -> Dict[str, str]:
         auth = self.token if (self.token.startswith("Bot ") or self.token.startswith("Bearer ")) else f"Bot {self.token}"
         return {
             "Authorization": auth,
-            "User-Agent": "DiscordToTelegramNotifier/1.0"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         }
 
     def _load_state(self) -> Dict[str, str]:
@@ -29,6 +31,15 @@ class DiscordFetcher:
                     return json.load(f)
             except Exception as e:
                 logger.warning(f"Failed to load state file {self.state_file}: {e}")
+        return {}
+
+    def _load_guild_map(self) -> Dict[str, Dict[str, str]]:
+        if os.path.exists(self.guild_map_file):
+            try:
+                with open(self.guild_map_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load guild map file {self.guild_map_file}: {e}")
         return {}
 
     def save_state(self):
@@ -42,7 +53,7 @@ class DiscordFetcher:
     def update_channel_state(self, channel_id: str, message_id: str):
         current_seen = self.state.get(channel_id)
         if not current_seen or int(message_id) > int(current_seen):
-            self.state[channel_id] = message_id
+            self.state[channel_id] = str(message_id)
 
     def _make_request(self, url: str, params: Dict[str, Any] = None) -> Any:
         resp = requests.get(url, headers=self.headers, params=params)
@@ -68,14 +79,14 @@ class DiscordFetcher:
     def fetch_new_posts_from_channel(self, channel_id: str) -> List[Dict[str, Any]]:
         """
         Dual-mode fetcher: checks both standard text messages and forum threads for the channel.
-        Removes dependency on restricted /channels/{id} endpoint.
+        Uses guild mapping fallback to ensure active forum threads are never missed.
         """
         last_seen_id = self.state.get(channel_id)
         channel_info = self.fetch_channel_info(channel_id)
-        channel_name = channel_info.get("name", channel_id)
-        guild_id = channel_info.get("guild_id", "")
+        channel_name = channel_info.get("name") or self.guild_map.get(channel_id, {}).get("channel_name", channel_id)
+        guild_id = channel_info.get("guild_id") or self.guild_map.get(channel_id, {}).get("guild_id", "")
 
-        # If channel is untracked (first run/restart), initialize baseline state with latest message ID and do NOT send old posts
+        # If channel is untracked, initialize baseline state to latest ID and return []
         if not last_seen_id:
             latest_id = self._get_latest_post_id_for_channel(channel_id, guild_id, channel_name)
             if latest_id:
@@ -91,7 +102,7 @@ class DiscordFetcher:
         if text_msgs:
             posts.extend(text_msgs)
 
-        # 2. Try forum threads (if channel is a forum or has threads)
+        # 2. Try forum threads (if channel is a forum or has active/archived threads)
         forum_posts = self._fetch_forum_posts(channel_id, guild_id, channel_name, last_seen_id)
         if forum_posts:
             posts.extend(forum_posts)
@@ -106,9 +117,6 @@ class DiscordFetcher:
         return sorted_posts
 
     def _get_latest_post_id_for_channel(self, channel_id: str, guild_id: str, channel_name: str) -> str:
-        """
-        Fetches the current most recent post/thread ID for a channel to set baseline state.
-        """
         candidate_ids = []
         
         # Check text channel latest message
@@ -117,12 +125,23 @@ class DiscordFetcher:
         if raw_msgs and isinstance(raw_msgs, list) and len(raw_msgs) > 0:
             candidate_ids.append(int(raw_msgs[0]["id"]))
 
+        # Check active threads for guild
+        if guild_id:
+            active_url = f"{DISCORD_API_BASE}/guilds/{guild_id}/threads/active"
+            active_res = self._make_request(active_url)
+            if active_res and "threads" in active_res:
+                for t in active_res.get("threads", []):
+                    if t.get("parent_id") == channel_id:
+                        eff_id = max(int(t.get("last_message_id", 0) or 0), int(t["id"]))
+                        candidate_ids.append(eff_id)
+
         # Check forum archived threads latest
         archived_url = f"{DISCORD_API_BASE}/channels/{channel_id}/threads/archived/public"
         archived_res = self._make_request(archived_url)
         if archived_res and "threads" in archived_res:
             for t in archived_res.get("threads", []):
-                candidate_ids.append(int(t["id"]))
+                eff_id = max(int(t.get("last_message_id", 0) or 0), int(t["id"]))
+                candidate_ids.append(eff_id)
 
         if candidate_ids:
             return str(max(candidate_ids))
@@ -140,11 +159,13 @@ class DiscordFetcher:
         if not raw_msgs or not isinstance(raw_msgs, list):
             return []
 
-        if not last_seen_id:
-            raw_msgs = raw_msgs[:5]
-
         posts = []
         for msg in raw_msgs:
+            # Dynamically update cached guild_id if available in payload
+            if msg.get("guild_id") and not guild_id:
+                guild_id = msg["guild_id"]
+                self.guild_map[channel_id] = {"guild_id": guild_id, "channel_name": channel_name}
+
             parsed = self._parse_message(msg, guild_id=guild_id, channel_name=channel_name)
             if parsed:
                 posts.append(parsed)
@@ -154,31 +175,41 @@ class DiscordFetcher:
         posts = []
         threads = []
 
-        if guild_id:
-            active_url = f"{DISCORD_API_BASE}/guilds/{guild_id}/threads/active"
+        # 1. Fetch Active Threads from Guild if guild_id is known
+        effective_guild_id = guild_id or self.guild_map.get(forum_id, {}).get("guild_id", "")
+        if effective_guild_id:
+            active_url = f"{DISCORD_API_BASE}/guilds/{effective_guild_id}/threads/active"
             active_res = self._make_request(active_url)
             if active_res and "threads" in active_res:
                 threads.extend([t for t in active_res["threads"] if t.get("parent_id") == forum_id])
 
+        # 2. Fetch Archived Public Threads
         archived_url = f"{DISCORD_API_BASE}/channels/{forum_id}/threads/archived/public"
         archived_res = self._make_request(archived_url)
         if archived_res and "threads" in archived_res:
-            threads.extend([t for t in archived_res.get("threads", []) if t.get("parent_id") == forum_id])
+            threads.extend([t for t in archived_res.get("threads", []) if t.get("parent_id", forum_id) == forum_id])
 
-        # Filter out threads older than or equal to last_seen_id
+        # Filter threads using the maximum of last_message_id and thread id
         valid_threads = []
         for t in threads:
-            t_id = t["id"]
-            if last_seen_id and int(t_id) <= int(last_seen_id):
+            t_id = int(t["id"])
+            last_msg_id = int(t.get("last_message_id", 0) or 0)
+            effective_id = max(t_id, last_msg_id)
+
+            if last_seen_id and effective_id <= int(last_seen_id):
                 continue
+            t["_effective_id"] = effective_id
             valid_threads.append(t)
 
-        valid_threads.sort(key=lambda t: int(t["id"]), reverse=True)
+        # Sort valid threads by effective ID
+        valid_threads.sort(key=lambda t: t["_effective_id"], reverse=True)
         valid_threads = valid_threads[:15]
 
         for thread in valid_threads:
             thread_id = thread["id"]
+            effective_id = str(thread["_effective_id"])
             thread_name = thread.get("name", "Forum Post")
+            th_guild_id = thread.get("guild_id") or effective_guild_id
 
             msg_url = f"{DISCORD_API_BASE}/channels/{thread_id}/messages"
             msgs = self._make_request(msg_url, params={"limit": 1})
@@ -186,12 +217,12 @@ class DiscordFetcher:
                 msg = msgs[0]
                 parsed = self._parse_message(
                     msg, 
-                    guild_id=guild_id, 
+                    guild_id=th_guild_id, 
                     channel_name=f"{forum_name} -> {thread_name}",
                     thread_title=thread_name
                 )
                 if parsed:
-                    parsed["id"] = thread_id
+                    parsed["id"] = effective_id
                     posts.append(parsed)
 
         return posts
