@@ -75,6 +75,15 @@ class DiscordFetcher:
         channel_name = channel_info.get("name", channel_id)
         guild_id = channel_info.get("guild_id", "")
 
+        # If channel is untracked (first run/restart), initialize baseline state with latest message ID and do NOT send old posts
+        if not last_seen_id:
+            latest_id = self._get_latest_post_id_for_channel(channel_id, guild_id, channel_name)
+            if latest_id:
+                logger.info(f"Channel {channel_id} untracked. Initializing baseline state to latest message {latest_id}")
+                self.state[channel_id] = latest_id
+                self.save_state()
+            return []
+
         posts = []
 
         # 1. Try standard text channel messages
@@ -95,6 +104,29 @@ class DiscordFetcher:
         sorted_posts = list(unique_posts.values())
         sorted_posts.sort(key=lambda p: int(p["id"]))
         return sorted_posts
+
+    def _get_latest_post_id_for_channel(self, channel_id: str, guild_id: str, channel_name: str) -> str:
+        """
+        Fetches the current most recent post/thread ID for a channel to set baseline state.
+        """
+        candidate_ids = []
+        
+        # Check text channel latest message
+        url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"
+        raw_msgs = self._make_request(url, params={"limit": 1})
+        if raw_msgs and isinstance(raw_msgs, list) and len(raw_msgs) > 0:
+            candidate_ids.append(int(raw_msgs[0]["id"]))
+
+        # Check forum archived threads latest
+        archived_url = f"{DISCORD_API_BASE}/channels/{channel_id}/threads/archived/public"
+        archived_res = self._make_request(archived_url)
+        if archived_res and "threads" in archived_res:
+            for t in archived_res.get("threads", []):
+                candidate_ids.append(int(t["id"]))
+
+        if candidate_ids:
+            return str(max(candidate_ids))
+        return ""
 
     def _fetch_text_channel_messages(self, channel_id: str, guild_id: str, channel_name: str, last_seen_id: str) -> List[Dict[str, Any]]:
         url = f"{DISCORD_API_BASE}/channels/{channel_id}/messages"

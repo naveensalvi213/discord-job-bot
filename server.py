@@ -85,7 +85,15 @@ def bot_loop():
                     for post in posts:
                         author_safe = post['author'].encode('ascii', 'ignore').decode('ascii')
                         channel_safe = post['channel_name'].encode('ascii', 'ignore').decode('ascii')
-                        logger.info(f" -> Evaluating post {post['id']} by {author_safe} in #{channel_safe}...")
+                        
+                        # Pre-filter keywords before calling Gemini AI to save quota & avoid rate limits
+                        if not gemini.has_relevant_keywords(post["content"]):
+                            logger.info(f" -> Skipping post {post['id']} by {author_safe} (no keywords matched)")
+                            fetcher.update_channel_state(channel_id, post["id"])
+                            continue
+
+                        logger.info(f" -> Keywords matched! Evaluating post {post['id']} by {author_safe} in #{channel_safe} with Gemini AI...")
+                        time.sleep(1.5)  # Stay under Gemini 15 RPM limit
 
                         evaluation = gemini.evaluate_post(
                             post_content=post["content"],
